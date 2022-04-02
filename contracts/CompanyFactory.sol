@@ -5,7 +5,8 @@ import "hardhat/console.sol";
 import "@openzeppelin/contracts/utils/Counters.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-contract CompanyFactory is Ownable {
+contract CompanyFactory {
+    address public owner;
     using Counters for Counters.Counter;
     Counters.Counter public numCompanies;
     Counters.Counter public numPayees;
@@ -79,24 +80,26 @@ contract CompanyFactory is Ownable {
     );
 
     // =============== MODIFIERS ========= //
-    modifier onlyAdmin() {
-        require(contractAdmins[msg.sender]);
+    modifier onlyAdmins() {
+        require(
+            contractAdmins[msg.sender] || msg.sender == owner,
+            "You are not a contract admin"
+        );
         _;
     }
 
-    modifier onlyCompanyOwner(uint256 companyId) {
-        require(companyList[companyId].owner == msg.sender);
-        _;
-    }
-
-    modifier onlyManager(uint256 companyId) {
-        require(companyList[companyId].manager == msg.sender);
+    modifier onlyCompanyAdmins(uint256 companyId) {
+        require(
+            companyList[companyId].owner == msg.sender ||
+                companyList[companyId].manager == msg.sender,
+            "You are not a company admin"
+        );
         _;
     }
 
     modifier isValidAddress(address _address) {
-        require(_address != address(0));
-        require(!isContract(_address));
+        require(_address != address(0), "Address is not correct");
+        require(!isContract(_address), "Address can not be a contract");
         _;
     }
 
@@ -107,24 +110,26 @@ contract CompanyFactory is Ownable {
     mapping(uint256 => TaxDeductions) public taxDeductionList;
     mapping(address => bool) private contractAdmins;
 
-    constructor() {}
-
-    // ============ ADMIN FUNCTIONS ============ //
-    function addAdmin(address _address) external onlyOwner onlyAdmin {
-        adminCount.increment();
-        contractAdmins[_address] = true;
+    constructor() {
+        owner = msg.sender;
+        contractAdmins[msg.sender] = true;
     }
 
-    function removeAdmin(address _address) external onlyOwner onlyAdmin {
-        adminCount.decrement();
-        contractAdmins[_address] = false;
+    // ============ ADMIN FUNCTIONS ============ //
+    function flipAdminState(address _address) external onlyAdmins {
+        contractAdmins[_address] = !contractAdmins[_address];
+        if (contractAdmins[_address] == true) {
+            adminCount.increment();
+        } else {
+            adminCount.decrement();
+        }
     }
 
     function createTaxBucket(
         string memory _domicileName,
         string memory _description,
         uint256[] memory _deductionIds
-    ) external onlyOwner onlyAdmin {
+    ) external onlyAdmins {
         taxBucketCount.increment();
         TaxBucket storage taxBucket = taxBucketList[taxBucketCount.current()];
         taxBucket.countryOfDomicile = _domicileName;
@@ -137,18 +142,14 @@ contract CompanyFactory is Ownable {
         string memory _domicileName,
         string memory _description,
         uint256[] memory _deductionIds
-    ) external onlyOwner onlyAdmin {
+    ) external onlyAdmins {
         TaxBucket storage taxBucket = taxBucketList[_bucketId];
         taxBucket.countryOfDomicile = _domicileName;
         taxBucket.description = _description;
         taxBucket.taxDeductions = _deductionIds;
     }
 
-    function flipStateTaxBucket(uint256 _bucketId)
-        external
-        onlyOwner
-        onlyAdmin
-    {
+    function flipStateTaxBucket(uint256 _bucketId) external onlyAdmins {
         taxBucketList[_bucketId].approved = !taxBucketList[_bucketId].approved;
     }
 
@@ -158,7 +159,7 @@ contract CompanyFactory is Ownable {
         uint256 _deduction,
         DeductionType _deductionType,
         Due _due
-    ) external onlyOwner onlyAdmin {
+    ) external onlyAdmins {
         taxDeductionCount.increment();
         TaxDeductions storage taxDeduction = taxDeductionList[
             taxDeductionCount.current()
@@ -170,11 +171,7 @@ contract CompanyFactory is Ownable {
         taxDeduction.due = _due;
     }
 
-    function flipStateTaxDeductions(uint256 _deductionId)
-        external
-        onlyOwner
-        onlyAdmin
-    {
+    function flipStateTaxDeductions(uint256 _deductionId) external onlyAdmins {
         taxDeductionList[_deductionId].approved = !taxDeductionList[
             _deductionId
         ].approved;
@@ -198,12 +195,11 @@ contract CompanyFactory is Ownable {
         uint256 _taxBucketId,
         string memory _name,
         address _address
-    )
-        external
-        onlyCompanyOwner(_companyId)
-        onlyManager(_companyId)
-        isValidAddress(_address)
-    {
+    ) external onlyCompanyAdmins(_companyId) isValidAddress(_address) {
+        require(
+            !addressAlreadyConnected(_address, _companyId),
+            "Address is already connected to the company"
+        );
         numPayees.increment();
         Payee storage payee = payeeList[numPayees.current()];
         Company storage company = companyList[_companyId];
@@ -225,13 +221,20 @@ contract CompanyFactory is Ownable {
         uint256 _companyId,
         address _address,
         uint256 _newSalary
-    ) external onlyCompanyOwner(_companyId) onlyManager(_companyId) {
+    ) external onlyCompanyAdmins(_companyId) {
         Company storage company = companyList[_companyId];
         bool foundPayee;
 
         for (uint256 i; i < company.numOfPayees; i++) {
             if (company.payees[i].account == _address) {
                 foundPayee = true;
+                if (_newSalary > company.payees[i].salary) {
+                    uint256 difference = _newSalary - company.payees[i].salary;
+                    company.payrollSum += difference;
+                } else {
+                    uint256 difference = company.payees[i].salary - _newSalary;
+                    company.payrollSum -= difference;
+                }
                 company.payees[i].salary = _newSalary;
                 payeeList[company.payees[i].id] = company.payees[i];
                 break;
@@ -243,18 +246,27 @@ contract CompanyFactory is Ownable {
     // @dev Removes payee from Company payee array and replaces gap with payee at end of array
     function removePayee(uint256 _companyId, address _address)
         external
-        onlyCompanyOwner(_companyId)
-        onlyManager(_companyId)
+        onlyCompanyAdmins(_companyId)
     {
         Company storage company = companyList[_companyId];
         bool foundPayee;
 
-        for (uint256 i; i < company.numOfPayees - 1; i++) {
-            if (company.payees[i].account == _address) {
+        for (uint256 i; i < company.numOfPayees; i++) {
+            if (
+                company.payees[i].account == _address && company.numOfPayees > 1
+            ) {
                 foundPayee = true;
                 company.payrollSum -= company.payees[i].salary;
+                delete payeeList[company.payees[i].id];
                 company.payees[i] = company.payees[company.numOfPayees];
                 delete company.payees[company.numOfPayees];
+                company.numOfPayees -= 1;
+                break;
+            } else if (company.payees[i].account == _address) {
+                foundPayee = true;
+                company.payrollSum -= company.payees[i].salary;
+                delete payeeList[company.payees[i].id];
+                delete company.payees[i];
                 company.numOfPayees -= 1;
                 break;
             }
@@ -265,7 +277,7 @@ contract CompanyFactory is Ownable {
     // @dev Lets owner change the manager of the company
     function setManager(uint256 _companyId, address _manager)
         external
-        onlyCompanyOwner(_companyId)
+        onlyCompanyAdmins(_companyId)
         isValidAddress(_manager)
     {
         Company storage company = companyList[_companyId];
@@ -277,7 +289,7 @@ contract CompanyFactory is Ownable {
     // @dev Renounces ownership to a valid address that is not a contract
     function renounceOwnership(uint256 _companyId, address _newOwner)
         external
-        onlyCompanyOwner(_companyId)
+        onlyCompanyAdmins(_companyId)
         isValidAddress(_newOwner)
     {
         Company storage company = companyList[_companyId];
@@ -293,5 +305,18 @@ contract CompanyFactory is Ownable {
             size := extcodesize(_address)
         }
         return (size > 0);
+    }
+
+    function addressAlreadyConnected(address _address, uint256 _companyId)
+        internal
+        view
+        returns (bool)
+    {
+        for (uint256 i; i < companyList[_companyId].numOfPayees; i++) {
+            if (companyList[_companyId].payees[i].account == _address) {
+                return true;
+            }
+        }
+        return false;
     }
 }
