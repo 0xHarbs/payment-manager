@@ -34,7 +34,7 @@ contract PaymentManager is CompanyFactory {
     );
 
     // ============= MAPPINGS ============= //
-    mapping(address => uint256) balances;
+    mapping(address => uint256) public balances;
     mapping(uint256 => Bonuses) public bonuses;
     mapping(uint256 => BonusPayee) public bonusPayeeList;
 
@@ -58,7 +58,10 @@ contract PaymentManager is CompanyFactory {
         onlyCompanyAdmins(_companyId)
     {
         Company storage company = companyList[_companyId];
-        require(msg.value >= company.payrollSum);
+        require(
+            msg.value >= company.payrollSum,
+            "Message value is not enough for payroll"
+        );
         (bool sent, ) = (address(this)).call{value: msg.value}("");
         require(sent, "Transfer did not work");
         for (uint256 i; i < company.numOfPayees; i++) {
@@ -129,6 +132,7 @@ contract PaymentManager is CompanyFactory {
         );
         for (uint256 i; i < bonus.numOfBonuses; i++) {
             bonus.bonusPayees[i].bonusPercent = _bonusStructure[i];
+            bonusPayeeList[bonus.bonusPayees[i].id] = bonus.bonusPayees[i];
         }
     }
 
